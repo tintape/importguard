@@ -184,6 +184,13 @@ def test_sigkill_during_processing_then_restart(engine: Engine, settings: Settin
     assert sales_summary(engine) == (5_000, expected_total(0, 5_000))
 
 
+def test_finished_at_reflects_real_processing_time(engine: Engine, settings: Settings, tmp_path: Path) -> None:
+    job = submit(engine, settings, "pos", make_csv(0, 10))
+    assert run_worker(settings, "--once", faults="after_staging=sleep:1", cwd=tmp_path).returncode == 0
+    row = job_row(engine, job)
+    assert (row.finished_at - row.started_at).total_seconds() >= 1
+
+
 def test_queued_job_survives_until_a_worker_runs(engine: Engine, settings: Settings, tmp_path: Path) -> None:
     # The web process only writes the job row; nothing runs in-process. Any later worker picks it up.
     job = submit(engine, settings, "pos", make_csv(0, 10))
@@ -263,3 +270,19 @@ def test_missing_stored_file_is_an_internal_failure(engine: Engine, worker_engin
     assert (outcome.status, outcome.failure_kind) == ("failed", "internal")
     assert "FileNotFoundError" in job_row(engine, job).message
     assert scalar(engine, "SELECT count(*) FROM sales") == 0
+
+
+def test_long_running_worker_processes_jobs_and_stops_gracefully(
+    engine: Engine, settings: Settings, tmp_path: Path
+) -> None:
+    worker = start_worker(settings, cwd=tmp_path)
+    try:
+        job = submit(engine, settings, "pos", make_csv(0, 20))  # submitted while the worker is polling
+        wait_for(lambda: job_row(engine, job).status == "succeeded")
+        worker.send_signal(signal.SIGTERM)
+        assert worker.wait(timeout=10) == 0
+    finally:
+        worker.kill()
+    output = worker.stdout.read() if worker.stdout else ""
+    assert "finishing the current job, then exiting" in output
+    assert sales_summary(engine) == (20, expected_total(0, 20))
