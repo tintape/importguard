@@ -23,6 +23,8 @@ from importguard.models import sales, sources
 CENT = Decimal("0.01")
 MAX_CHART_DAYS = 120
 EXPORT_BATCH_ROWS = 2_000
+FILTER_MIN_DATE = date(2000, 1, 1)
+FILTER_MAX_DATE = date(2100, 12, 31)
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,10 +62,14 @@ def parse_filter(params: Mapping[str, str], *, valid_source_ids: set[int]) -> Pa
         if not raw:
             return None
         try:
-            return date.fromisoformat(raw)
+            value = date.fromisoformat(raw)
         except ValueError:
             errors.append(f"{label} must be a date like 2026-09-01.")
             return None
+        if not FILTER_MIN_DATE <= value <= FILTER_MAX_DATE:
+            errors.append(f"{label} must be between {FILTER_MIN_DATE} and {FILTER_MAX_DATE}.")
+            return None
+        return value
 
     date_from = parse_date("date_from", "From date")
     date_to = parse_date("date_to", "To date")
@@ -74,7 +80,12 @@ def parse_filter(params: Mapping[str, str], *, valid_source_ids: set[int]) -> Pa
     source_id: int | None = None
     raw_source = (params.get("source") or "").strip()
     if raw_source:
-        if raw_source.isdigit() and int(raw_source) in valid_source_ids:
+        if (
+            raw_source.isascii()
+            and raw_source.isdigit()
+            and len(raw_source) <= 5
+            and int(raw_source) in valid_source_ids
+        ):
             source_id = int(raw_source)
         else:
             errors.append("Unknown source; the source filter was ignored.")

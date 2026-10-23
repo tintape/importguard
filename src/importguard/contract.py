@@ -159,7 +159,10 @@ def normalize_sold_at(value: object, *, now: datetime) -> datetime:
         offset = moment.utcoffset()
         if offset is None or abs(offset) > timedelta(hours=14):
             raise InvalidField("invalid_format", "UTC offset must be between -14:00 and +14:00")
-    moment = moment.astimezone(UTC)
+    try:
+        moment = moment.astimezone(UTC)
+    except OverflowError as exc:  # e.g. 0001-01-01T00:00:00+14:00
+        raise InvalidField("out_of_range", "sold_at is outside the supported date range") from exc
     if moment < EARLIEST_SALE:
         raise InvalidField("out_of_range", "sold_at is before 2000-01-01")
     if moment > now + FUTURE_TOLERANCE:
@@ -207,11 +210,11 @@ def normalize_unit_price(value: object) -> Decimal:
             f"unit_price must be a decimal or text, got {type(value).__name__} "
             "(binary floating point is not accepted for money)",
         )
+    if not MIN_PRICE <= amount <= MAX_PRICE:  # checked first: huge values cannot be quantized
+        raise InvalidField("out_of_range", f"unit_price must be between {MIN_PRICE} and {MAX_PRICE}")
     quantized = amount.quantize(PRICE_STEP)
     if quantized != amount:
         raise InvalidField("precision", "unit_price has more than 2 decimal places")
-    if not MIN_PRICE <= quantized <= MAX_PRICE:
-        raise InvalidField("out_of_range", f"unit_price must be between {MIN_PRICE} and {MAX_PRICE}")
     return quantized
 
 

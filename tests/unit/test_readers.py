@@ -75,6 +75,13 @@ class TestCsv:
             list(iter_csv(write(tmp_path, text)))
         assert info.value.code == code
 
+    def test_trailing_blank_lines_are_tolerated(self, tmp_path: Path) -> None:
+        rows = list(iter_csv(write(tmp_path, HEADER + ROW + "\n\n" + ",,,,,,\n")))
+        assert [(r.number, r.error_code) for r in rows] == [(1, None)]
+        with pytest.raises(FileRejected) as info:
+            list(iter_csv(write(tmp_path, HEADER + "\n\n")))
+        assert info.value.code == "empty_file"
+
     def test_bad_rows_are_reported_individually(self, tmp_path: Path) -> None:
         rows = list(iter_csv(write(tmp_path, HEADER + ROW + "\n" + "a,b\n" + ROW)))
         assert [(r.number, r.error_code) for r in rows] == [(1, None), (2, "empty_row"), (3, "column_count"), (4, None)]
@@ -175,3 +182,24 @@ def test_raw_row_is_immutable() -> None:
     row = RawRow(1, {})
     with pytest.raises(AttributeError):
         row.number = 2  # type: ignore[misc]
+
+
+def test_nul_bytes_anywhere_in_csv_are_rejected(tmp_path: Path) -> None:
+    padding = "".join(f"S-{i},2026-09-01T10:00:00Z,BER-01,coffee,2,3.50,EUR\n" for i in range(400))  # > 8 KiB
+    with pytest.raises(FileRejected) as info:
+        list(iter_csv(write(tmp_path, HEADER + padding + "S-x,\x00,a,b,c,d,e\n")))
+    assert info.value.code == "file_encoding" and "NUL" in info.value.message
+
+
+def test_header_messages_are_sanitized(tmp_path: Path) -> None:
+    hostile = "a\x07b" + "x" * 500
+    with pytest.raises(FileRejected) as info:
+        list(iter_csv(write(tmp_path, f"{HEADER.strip()},{hostile},{hostile}\n")))
+    assert "\x07" not in info.value.message and len(info.value.message) < 300
+
+
+def test_decoded_batch_size_guard(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(readers, "MAX_BATCH_BYTES", 10)
+    with pytest.raises(FileRejected) as info:
+        list(iter_parquet(parquet(tmp_path, good_columns(5)), batch_rows=10))
+    assert (info.value.code, info.value.row_number) == ("file_too_large_uncompressed", 1)

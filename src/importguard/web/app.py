@@ -39,10 +39,11 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     _add_health_check(app, ctx)
     _add_error_pages(app, ctx)
 
-    app.add_middleware(SecurityHeaders)
+    # Added last = outermost: security headers also cover the 400/403/413 answers of the inner checks.
     app.add_middleware(SameOriginPosts)
     app.add_middleware(BodySizeLimit, max_body_bytes=settings.max_upload_bytes)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
+    app.add_middleware(SecurityHeaders)
     return app
 
 

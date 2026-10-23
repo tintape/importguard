@@ -192,6 +192,17 @@ def test_dashboard_filters(seeded: TestClient) -> None:
     assert "No sales match these filters" in empty.text
 
 
+@pytest.mark.parametrize(
+    "path", ["/sales?page=\u00b2", "/?source=\u00b2", "/sales?date_to=9999-12-31", "/imports?page=99999999999999999999"]
+)
+def test_odd_query_values_never_cause_a_server_error(client: TestClient, path: str) -> None:
+    assert client.get(path).status_code == 200
+
+
+def test_non_ascii_digit_source_is_rejected(client: TestClient) -> None:
+    assert upload(client, GOOD, source="\u00b2").status_code == 400
+
+
 def test_empty_states(client: TestClient) -> None:
     assert "No sales yet" in client.get("/").text
     assert "No imports yet" in client.get("/imports").text
@@ -244,6 +255,34 @@ def test_upload_size_limit(engine: Engine, settings: Settings) -> None:
         assert response.status_code == 413
         assert "larger than the 1 MiB limit" in response.text
     assert not small.upload_dir.exists() or not any(small.upload_dir.iterdir())  # partial files removed
+
+
+def test_chunked_oversized_upload_gets_413(engine: Engine, settings: Settings) -> None:
+    small = settings.model_copy(update={"max_upload_bytes": 1024 * 1024})
+
+    def chunks():  # type: ignore[no-untyped-def]  # no Content-Length: transfer is chunked
+        boundary = b'--x\r\nContent-Disposition: form-data; name="file"; filename="a.csv"\r\n\r\n'
+        yield boundary
+        for _ in range(3):
+            yield b"y" * (1024 * 1024)
+
+    with TestClient(create_app(small, engine), base_url="http://localhost") as client:
+        response = client.post(
+            "/imports", content=chunks(), headers={"Content-Type": "multipart/form-data; boundary=x"}
+        )
+    assert response.status_code == 413
+    assert "content-security-policy" in response.headers  # headers also cover middleware answers
+
+
+def test_nul_bytes_are_rejected_as_invalid_data(
+    client: TestClient, engine: Engine, worker_engine: Engine, settings: Settings
+) -> None:
+    assert upload(client, GOOD + b"W-9,\x00,a,b,c,d,e\n").status_code == 415  # caught by the content sniffer
+    padding = "".join(f"W-{i},2026-09-01T10:00:00Z,BER-01,c,1,1.00,EUR\n" for i in range(300)).encode()
+    job = upload(client, GOOD + padding + b"W-x,2026-09-01T10:00:00Z,BER-01,c,1,1\x00,EUR\n")  # beyond 8 KiB
+    [outcome] = drain(worker_engine, settings)
+    assert (outcome.status, outcome.failure_kind) == ("failed", "validation")  # not an internal error
+    assert "NUL byte" in client.get(job.headers["location"]).text
 
 
 def test_cross_site_post_is_rejected(client: TestClient) -> None:

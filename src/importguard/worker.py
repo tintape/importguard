@@ -39,11 +39,19 @@ def default_worker_id() -> str:
 
 def make_worker_engine(settings: Settings) -> Engine:
     # NullPool: closing the connection really disconnects, which releases advisory locks.
-    # TCP keepalives let PostgreSQL notice a vanished worker host, not just a dead process.
+    # Keepalives on both ends: the server-side settings (options=-c ...) are what make PostgreSQL drop the
+    # session, and with it the advisory lock, about a minute after a worker host silently disappears.
+    server_keepalives = "-c tcp_keepalives_idle=30 -c tcp_keepalives_interval=10 -c tcp_keepalives_count=3"
     return make_engine(
         settings.database_url,
         poolclass=NullPool,
-        connect_args={"keepalives": 1, "keepalives_idle": 30, "keepalives_interval": 10, "keepalives_count": 3},
+        connect_args={
+            "keepalives": 1,
+            "keepalives_idle": 30,
+            "keepalives_interval": 10,
+            "keepalives_count": 3,
+            "options": server_keepalives,
+        },
     )
 
 

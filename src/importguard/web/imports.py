@@ -20,6 +20,7 @@ router = APIRouter()
 Ctx = Annotated[WebContext, Depends(web_context)]
 
 IMPORTS_PAGE_SIZE = 25
+SOURCE_ID_MAX_DIGITS = 5
 ERROR_PREVIEW_ROWS = 50
 
 
@@ -49,7 +50,7 @@ def imports_page(request: Request, ctx: Ctx) -> HTMLResponse:
 
 
 def _accept_upload(ctx: WebContext, source_id: str, file: UploadFile | None) -> StoredUpload:
-    if not source_id.isdigit():
+    if not (source_id.isascii() and source_id.isdigit() and len(source_id) <= SOURCE_ID_MAX_DIGITS):
         raise UploadRejected(400, "Choose the source system this file came from.")
     if file is None or not file.filename:
         raise UploadRejected(400, "Choose a CSV or Parquet file to upload.")

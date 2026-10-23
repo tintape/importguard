@@ -43,28 +43,33 @@ class BodySizeLimit:
             return
 
         received = 0
-        started = False
+        too_large = False
+        rejected = False
 
         async def counting_receive() -> Message:
-            nonlocal received
+            nonlocal received, too_large
             message = await receive()
             if message["type"] == "http.request":
                 received += len(message.get("body", b""))
                 if received > self.max_body_bytes:
+                    too_large = True
                     raise _TooLarge
             return message
 
-        async def tracking_send(message: Message) -> None:
-            nonlocal started
-            started = started or message["type"] == "http.response.start"
-            await send(message)
+        async def guarded_send(message: Message) -> None:
+            # The framework may turn the aborted body read into its own 400; answer 413 instead.
+            nonlocal rejected
+            if not too_large:
+                await send(message)
+            elif not rejected:
+                rejected = True
+                await self._reject(scope, receive, send)
 
         try:
-            await self.app(scope, counting_receive, tracking_send)
+            await self.app(scope, counting_receive, guarded_send)
         except _TooLarge:
-            if started:  # pragma: no cover - the app never responds before reading the body
-                raise
-            await self._reject(scope, receive, send)
+            if not rejected:
+                await self._reject(scope, receive, send)
 
     async def _reject(self, scope: Scope, receive: Receive, send: Send) -> None:
         limit_mib = (self.max_body_bytes - MULTIPART_OVERHEAD) // (1024 * 1024)

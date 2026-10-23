@@ -86,4 +86,6 @@ def web_context(request: Request) -> WebContext:
 
 def page_number(request: Request) -> int:
     raw = request.query_params.get("page", "1")
-    return min(int(raw), MAX_PAGE) if raw.isdigit() and int(raw) > 0 else 1
+    if not (raw.isascii() and raw.isdigit()) or len(raw) > len(str(MAX_PAGE)):
+        return 1
+    return min(max(int(raw), 1), MAX_PAGE)

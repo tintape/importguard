@@ -11,6 +11,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -82,6 +83,22 @@ def wait_for(predicate, timeout: float = 30.0) -> None:  # type: ignore[no-untyp
             return
         time.sleep(0.05)
     raise AssertionError("condition not reached in time")
+
+
+def wait_for_output(proc: subprocess.Popen[str], marker: str, timeout: float = 30.0) -> None:
+    """Block until the process prints a line containing ``marker`` (read in a thread: no busy waiting)."""
+    found = threading.Event()
+
+    def reader() -> None:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            if marker in line:
+                found.set()
+                return
+
+    threading.Thread(target=reader, daemon=True).start()
+    if not found.wait(timeout):
+        raise AssertionError(f"worker never printed {marker!r}")
 
 
 def sales_summary(engine: Engine) -> tuple[int, str]:
@@ -170,8 +187,8 @@ def test_sigkill_during_processing_then_restart(engine: Engine, settings: Settin
     job = submit(engine, settings, "pos", make_csv(0, 5_000))
     worker = start_worker(settings, faults="after_staging=sleep:60", cwd=tmp_path)
     try:
-        wait_for(lambda: job_row(engine, job).status == "processing")
-        time.sleep(0.5)  # let it reach the staging checkpoint
+        wait_for_output(worker, "fault injection: after_staging")  # all 5,000 rows are staged, nothing published
+        assert job_row(engine, job).status == "processing"
         worker.send_signal(signal.SIGKILL)
         worker.wait(timeout=10)
     finally:
@@ -189,6 +206,11 @@ def test_finished_at_reflects_real_processing_time(engine: Engine, settings: Set
     assert run_worker(settings, "--once", faults="after_staging=sleep:1", cwd=tmp_path).returncode == 0
     row = job_row(engine, job)
     assert (row.finished_at - row.started_at).total_seconds() >= 1
+
+
+def test_worker_sessions_use_server_side_keepalives(worker_engine: Engine) -> None:
+    with worker_engine.connect() as conn:
+        assert conn.execute(text("SHOW tcp_keepalives_idle")).scalar_one() in ("30", "30s")
 
 
 def test_queued_job_survives_until_a_worker_runs(engine: Engine, settings: Settings, tmp_path: Path) -> None:
@@ -233,6 +255,27 @@ def test_concurrent_workers_keep_totals_exact(engine: Engine, settings: Settings
     assert [tuple(s) for s in statuses] == [("succeeded", 1, 10)]
     assert inserted == 1_200
     assert sales_summary(engine) == (1_200, expected_total(0, 1_200))
+
+
+def test_claim_lost_during_validation_is_fenced_before_publishing(
+    engine: Engine, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job = submit(engine, settings, "pos", make_csv(0, 10))
+
+    def bump_attempt_after_staging(name: str) -> None:
+        if name == "after_staging":  # someone re-claimed the job while we were validating
+            with engine.begin() as other:
+                other.execute(text("UPDATE import_jobs SET attempts = attempts + 1 WHERE id = :id"), {"id": job})
+
+    monkeypatch.setattr("importguard.processing.faults.checkpoint", bump_attempt_after_staging)
+    with engine.connect() as conn:
+        claim = claim_next_job(conn, worker_id="w1", max_attempts=3)
+        assert claim is not None
+        with pytest.raises(LostClaim):
+            process_claimed_job(conn, claim, settings)
+        conn.rollback()
+    assert sales_summary(engine) == (0, "0.00")
+    assert job_row(engine, job).status == "processing"  # left for the new owner
 
 
 def test_stale_attempt_is_fenced_off(engine: Engine, settings: Settings) -> None:

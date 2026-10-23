@@ -114,6 +114,18 @@ def test_parse_filter_reports_and_ignores_bad_values() -> None:
     ]
 
 
+@pytest.mark.parametrize("value", ["9999-12-31", "1999-12-31"])
+def test_parse_filter_rejects_dates_outside_the_supported_range(value: str) -> None:
+    parsed = parse_filter({"date_to": value}, valid_source_ids=set())
+    assert parsed.value.date_to is None and "between" in parsed.errors[0]
+
+
+def test_parse_filter_rejects_non_ascii_digits() -> None:
+    assert parse_filter({"source": "\u00b2"}, valid_source_ids={2}).errors == [
+        "Unknown source; the source filter was ignored."
+    ]
+
+
 def test_faults(monkeypatch: pytest.MonkeyPatch) -> None:
     faults.checkpoint("before_commit")  # disabled by default
     monkeypatch.setenv(faults.ENV_VAR, "before_commit=raise")

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -60,6 +60,17 @@ class RowError:
     raw_value: str | None = None
 
 
+MAX_MESSAGE_CHARS = 1_000
+
+
+def _clean(text: str | None) -> str | None:
+    """PostgreSQL text cannot hold NUL; messages are capped so a hostile file cannot bloat the database."""
+    if text is None:
+        return None
+    text = text.replace("\x00", "\ufffd")
+    return text if len(text) <= MAX_MESSAGE_CHARS else text[: MAX_MESSAGE_CHARS - 1] + "\u2026"
+
+
 @dataclass(slots=True)
 class ErrorCollector:
     limit: int
@@ -68,6 +79,7 @@ class ErrorCollector:
     validation_total: int = 0
 
     def add(self, error: RowError, *, validation: bool = True) -> None:
+        error = replace(error, message=_clean(error.message) or "", raw_value=_clean(error.raw_value))
         self.total += 1
         if validation:
             self.validation_total += 1
@@ -423,7 +435,7 @@ def _failure_message(kind: str, errors: ErrorCollector) -> str:
     if errors.validation_total:
         parts.append(_plural(errors.validation_total, "validation error"))
     if conflicts:
-        parts.append(_plural(conflicts, "conflicting sale ID"))
+        parts.append(_plural(conflicts, "conflicting row"))
     return f"Rejected: {' and '.join(parts)}. The whole file was rejected; no sales were changed."
 
 

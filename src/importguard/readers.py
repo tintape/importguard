@@ -19,7 +19,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
-from importguard.contract import FIELDS
+from importguard.contract import FIELDS, preview
 
 FileFormat = Literal["csv", "parquet"]
 
@@ -30,6 +30,8 @@ MAX_TEXT_CELL_CHARS = CSV_FIELD_SIZE_LIMIT
 MAX_ROW_GROUP_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
 MAX_TOTAL_UNCOMPRESSED_BYTES = 1024 * 1024 * 1024
 MAX_COMPRESSION_RATIO = 200
+# Footer sizes are written by whoever made the file, so also bound what a decoded batch really occupies.
+MAX_BATCH_BYTES = 256 * 1024 * 1024
 _UNITS_PER_SECOND = {"s": 1, "ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}
 
 
@@ -71,13 +73,14 @@ def check_header(names: list[str]) -> list[str]:
     normalized = [name.strip().lower() for name in names]
     duplicates = sorted({n for n in normalized if normalized.count(n) > 1})
     if duplicates:
-        raise FileRejected("header_duplicate_columns", f"duplicate columns: {', '.join(duplicates)}")
+        shown = ", ".join(repr(preview(n)) for n in duplicates[:5])
+        raise FileRejected("header_duplicate_columns", f"duplicate columns: {shown}")
     missing = [f for f in FIELDS if f not in normalized]
     if missing:
         raise FileRejected("header_missing_columns", f"missing columns: {', '.join(missing)}")
     unknown = [n for n in normalized if n not in FIELDS]
     if unknown:
-        shown = ", ".join(repr(n) for n in unknown[:5])
+        shown = ", ".join(repr(preview(n)) for n in unknown[:5])
         raise FileRejected("header_unknown_columns", f"unexpected columns: {shown}")
     return normalized
 
@@ -86,6 +89,8 @@ def _decoded_lines(handle: BinaryIO) -> Iterator[str]:
     """Decode line by line so an encoding error can name the exact line of the file."""
     for line_number, raw in enumerate(handle, start=1):
         line = raw.removeprefix(b"\xef\xbb\xbf") if line_number == 1 else raw
+        if b"\x00" in line:
+            raise FileRejected("file_encoding", f"the file contains a NUL byte (line {line_number} of the file)")
         try:
             yield line.decode("utf-8")
         except UnicodeDecodeError as exc:
@@ -104,11 +109,16 @@ def iter_csv(path: Path) -> Iterator[RawRow]:
             if header is None:
                 raise FileRejected("empty_file", "the file is empty")
             columns = check_header(header)
+            blank_rows: list[int] = []  # reported only if data follows: trailing blank lines are tolerated
             for record in reader:
                 row_number += 1
                 if not record or all(not cell.strip() for cell in record):
-                    yield RawRow(row_number, None, "empty_row", "the row is empty")
-                elif len(record) != len(columns):
+                    blank_rows.append(row_number)
+                    continue
+                for blank in blank_rows:
+                    yield RawRow(blank, None, "empty_row", "the row is empty")
+                blank_rows.clear()
+                if len(record) != len(columns):
                     yield RawRow(
                         row_number,
                         None,
@@ -119,7 +129,7 @@ def iter_csv(path: Path) -> Iterator[RawRow]:
                     yield RawRow(row_number, dict(zip(columns, record, strict=True)))
     except csv.Error as exc:
         raise FileRejected("csv_syntax", f"malformed CSV: {exc}", row_number + 1) from exc
-    if row_number == 0:
+    if row_number == len(blank_rows):
         raise FileRejected("empty_file", "the file has a header but no data rows")
 
 
@@ -202,6 +212,10 @@ def iter_parquet(path: Path, *, batch_rows: int) -> Iterator[RawRow]:
     row_number = 0
     try:
         for batch in parquet.iter_batches(batch_size=batch_rows, columns=list(original.values())):
+            if batch.nbytes > MAX_BATCH_BYTES:
+                raise FileRejected(
+                    "file_too_large_uncompressed", "the Parquet data is too large when uncompressed", row_number + 1
+                )
             data = {name: _column_values(batch.column(original[name]), row_number + 1) for name in FIELDS}
             for index in range(batch.num_rows):
                 row_number += 1

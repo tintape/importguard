@@ -62,6 +62,8 @@ class TestSoldAt:
             ("2026-09-01T10:00:00.123Z", "invalid_format"),
             (datetime(2026, 9, 1, 10, 0, 0, 5, tzinfo=UTC), "invalid_format"),
             ("2026-09-01T10:00:00+15:00", "invalid_format"),
+            ("0001-01-01T00:00:00+14:00", "out_of_range"),  # overflows when converted to UTC
+            ("9999-12-31T23:59:59-14:00", "out_of_range"),
             ("1999-12-31T23:59:59Z", "out_of_range"),
             ("2026-10-03T12:00:01Z", "out_of_range"),
             ("", "required"),
@@ -104,7 +106,10 @@ class TestUnitPrice:
             ("1,000.00", "invalid_format"),
             ("NaN", "invalid_format"),
             ("12.345", "precision"),
-            (Decimal("0.001"), "precision"),
+            (Decimal("1.001"), "precision"),
+            (Decimal("0.001"), "out_of_range"),
+            (Decimal("1E+30"), "out_of_range"),  # too big to quantize: must not crash
+            (Decimal("-1E+30"), "out_of_range"),
             ("0.00", "out_of_range"),
             ("1000000.01", "out_of_range"),
             (Decimal("NaN"), "invalid_format"),
