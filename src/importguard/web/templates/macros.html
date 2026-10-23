@@ -1,0 +1,68 @@
+{% macro status_badge(job) -%}
+  <span class="badge {{ job.status }}">{{ job.status | capitalize }}</span>
+{%- endmacro %}
+
+{% macro job_outcome(job) -%}
+  {%- if job.status == 'succeeded' -%}
+    <span class="stat">{{ job.rows_inserted | number }} new</span><span class="sub stat">{{ job.rows_skipped | number }} duplicates skipped</span>
+  {%- elif job.status == 'failed' -%}
+    <span class="stat">{{ failure_labels[job.failure_kind] }}</span>
+    {%- if job.error_count %}<span class="sub">{{ job.error_count | number }} problem{{ '' if job.error_count == 1 else 's' }}</span>{% endif -%}
+  {%- elif job.status == 'processing' -%}
+    <span class="muted">Validating…</span>
+  {%- else -%}
+    <span class="muted">Waiting for worker</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro filter_form(action, filters, sources, stores, currencies=None) -%}
+<form class="filters" method="get" action="{{ action }}" aria-label="Filters">
+  <div class="field">
+    <label for="f-from">From</label>
+    <input id="f-from" type="date" name="date_from" value="{{ filters.date_from or '' }}">
+  </div>
+  <div class="field">
+    <label for="f-to">To</label>
+    <input id="f-to" type="date" name="date_to" value="{{ filters.date_to or '' }}">
+  </div>
+  <div class="field">
+    <label for="f-source">Source</label>
+    <select id="f-source" name="source">
+      <option value="">All sources</option>
+      {% for s in sources %}<option value="{{ s.id }}" {% if filters.source_id == s.id %}selected{% endif %}>{{ s.name }}</option>{% endfor %}
+    </select>
+  </div>
+  <div class="field">
+    <label for="f-store">Store</label>
+    <select id="f-store" name="store">
+      <option value="">All stores</option>
+      {% for st in stores %}<option value="{{ st }}" {% if filters.store_id == st %}selected{% endif %}>{{ st }}</option>{% endfor %}
+    </select>
+  </div>
+  {% if currencies is not none %}
+  <div class="field">
+    <label for="f-currency">Currency</label>
+    <select id="f-currency" name="currency">
+      <option value="">All</option>
+      {% for c in currencies %}<option value="{{ c }}" {% if filters.currency == c %}selected{% endif %}>{{ c }}</option>{% endfor %}
+    </select>
+  </div>
+  {% endif %}
+  <div class="actions">
+    <button type="submit" class="primary">Apply</button>
+    {% if filters.query_items() %}<a class="button ghost" href="{{ action }}">Reset</a>{% endif %}
+  </div>
+</form>
+{%- endmacro %}
+
+{% macro filter_alerts(errors) -%}
+  {% if errors %}<div class="alert warn" role="status"><strong>Some filters were ignored</strong>{% for e in errors %}<p>{{ e }}</p>{% endfor %}</div>{% endif %}
+{%- endmacro %}
+
+{% macro pager(page, pages, base, query='') -%}
+  {% set sep = '&' if query else '' %}
+  <nav aria-label="Pagination">
+    <a class="button" href="{{ base }}?{{ query }}{{ sep }}page={{ page - 1 }}" {% if page <= 1 %}aria-disabled="true" tabindex="-1"{% endif %}>← Previous</a>
+    <a class="button" href="{{ base }}?{{ query }}{{ sep }}page={{ page + 1 }}" {% if page >= pages %}aria-disabled="true" tabindex="-1"{% endif %}>Next →</a>
+  </nav>
+{%- endmacro %}

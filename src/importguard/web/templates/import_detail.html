@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% from "macros.html" import status_badge %}
+{% block head_extra %}{% if active_job %}<meta http-equiv="refresh" content="2">{% endif %}{% endblock %}
+{% block title %}Import #{{ job.id }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <p class="small"><a href="/imports">← Imports</a></p>
+    <h1>Import #{{ job.id }} <span class="muted">·</span> <span class="mono">{{ job.original_filename }}</span></h1>
+  </div>
+  {{ status_badge(job) }}
+</div>
+
+<div class="stack">
+  {% if retried %}
+  <div class="alert info" role="status"><strong>Re-queued</strong><p>The worker will process this file again. Sales that were already imported are skipped, so retrying cannot double-count.</p></div>
+  {% endif %}
+
+  {% if job.status == 'succeeded' %}
+  <div class="alert ok" role="status"><strong>Imported</strong><p>{{ job.message }}</p></div>
+  {% elif job.status == 'failed' %}
+  <div class="alert error" role="alert">
+    <strong>{{ failure_labels[job.failure_kind] }}</strong>
+    <p>{{ job.message }}</p>
+  </div>
+  {% elif job.status == 'processing' %}
+  <div class="alert info" role="status"><strong>Processing</strong><p>The worker is validating the file. Nothing is visible in reports until the whole file has passed. This page refreshes automatically.</p></div>
+  {% else %}
+  <div class="alert info" role="status"><strong>Queued</strong><p>Waiting for the worker. If nothing happens, check that the worker process is running (<span class="mono">python -m importguard.worker</span>). This page refreshes automatically.</p></div>
+  {% endif %}
+
+  {% if identical %}
+  <div class="alert warn" role="note"><strong>Same content as import #{{ identical.id }}</strong><p>This file is byte-for-byte identical to <a href="/imports/{{ identical.id }}">{{ identical.original_filename }}</a> ({{ identical.status }}) for the same source. Importing it again cannot add sales; duplicates are skipped.</p></div>
+  {% endif %}
+
+  <section class="card" aria-label="Row counts">
+    <div class="facts">
+      <div class="fact"><div class="label">Rows read</div><div class="value">{{ job.rows_read | number if job.rows_read is not none else '—' }}</div></div>
+      <div class="fact"><div class="label">New sales added</div><div class="value">{{ job.rows_inserted | number if job.rows_inserted is not none else '—' }}</div></div>
+      <div class="fact"><div class="label">Duplicates skipped</div><div class="value">{{ job.rows_skipped | number if job.rows_skipped is not none else '—' }}</div></div>
+      <div class="fact"><div class="label">Problems found</div><div class="value">{{ job.error_count | number }}</div></div>
+    </div>
+  </section>
+
+  {% if job.status == 'failed' and job.failure_kind != 'internal' %}
+  <section class="card" aria-labelledby="errors-heading">
+    <div class="card-head">
+      <div>
+        <h2 id="errors-heading">Problems</h2>
+        <p>Row numbers count data rows; the header is not a row. {% if job.error_count > errors | length %}Showing the first {{ errors | length }} of {{ job.error_count | number }}.{% endif %}</p>
+      </div>
+      <a class="button" href="/imports/{{ job.id }}/errors.csv">Download error report (CSV)</a>
+    </div>
+    {% if errors %}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th class="num">Row</th><th>Field</th><th>Problem</th><th>Value in file</th></tr></thead>
+        <tbody>
+          {% for e in errors %}
+          <tr>
+            <td class="num">{{ e.row_number if e.row_number is not none else 'file' }}</td>
+            <td class="mono">{{ e.field or '—' }}</td>
+            <td>{{ e.message }}<span class="sub mono">{{ e.code }}</span></td>
+            <td class="mono truncate" title="{{ e.raw_value or '' }}">{{ e.raw_value if e.raw_value is not none else '' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+    <div class="card-foot small muted">Fix the file and upload it again. Retrying the same file would give the same result, so retry is only offered for processing errors.</div>
+  </section>
+  {% endif %}
+
+  {% if retryable %}
+  <section class="card">
+    <div class="card-body">
+      <form method="post" action="/imports/{{ job.id }}/retry" data-upload-form>
+        <p class="small muted">The file itself was fine to process again: this failure was not caused by its content. Retrying is safe — already imported sales are skipped.</p>
+        <p><button type="submit" class="primary" data-submit><span class="spinner" aria-hidden="true"></span><span data-label>Retry processing</span></button></p>
+      </form>
+    </div>
+  </section>
+  {% endif %}
+
+  <div class="grid-2">
+    <section class="card" aria-labelledby="file-heading">
+      <div class="card-head"><h2 id="file-heading">File</h2></div>
+      <div class="card-body">
+        <dl class="meta">
+          <dt>Source</dt><dd>{{ job.source_name }} <span class="tag">{{ job.source_code }}</span></dd>
+          <dt>Original name</dt><dd class="mono">{{ job.original_filename }}</dd>
+          <dt>Format</dt><dd>{{ job.file_format | upper }} (detected from content)</dd>
+          <dt>Size</dt><dd>{{ job.size_bytes | filesize }}</dd>
+          <dt>SHA-256</dt><dd class="mono small">{{ job.content_sha256 }}</dd>
+        </dl>
+      </div>
+    </section>
+    <section class="card" aria-labelledby="timeline-heading">
+      <div class="card-head"><h2 id="timeline-heading">Timeline</h2></div>
+      <div class="card-body">
+        <ol class="timeline">
+          <li><span class="dot done"></span><span>Uploaded and queued</span><span class="muted small nowrap">{{ job.created_at | localtime }}</span></li>
+          <li><span class="dot {{ 'done' if job.started_at and job.status != 'processing' else ('now' if job.status == 'processing' else '') }}"></span>
+              <span>Processing started{% if job.attempts > 1 %} <span class="tag">attempt {{ job.attempts }}</span>{% endif %}</span><span class="muted small nowrap">{{ job.started_at | localtime }}</span></li>
+          <li><span class="dot {{ 'done' if job.status == 'succeeded' else ('bad' if job.status == 'failed' else '') }}"></span>
+              <span>{{ 'Published' if job.status == 'succeeded' else ('Rejected' if job.status == 'failed' else 'Finished') }}</span><span class="muted small nowrap">{{ job.finished_at | localtime }}</span></li>
+        </ol>
+      </div>
+    </section>
+  </div>
+</div>
+{% endblock %}

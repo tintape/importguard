@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% from "macros.html" import status_badge, job_outcome, pager %}
+{% block title %}Imports{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Imports</h1>
+    <p>Each file is checked as a whole. If any row is invalid or conflicts with existing sales, nothing from that file is imported.</p>
+  </div>
+</div>
+
+<div class="stack">
+  <section class="card" aria-labelledby="upload-heading">
+    <div class="card-head"><h2 id="upload-heading">Upload an export</h2></div>
+    <div class="card-body">
+      <form class="upload-form upload-row" method="post" action="/imports" enctype="multipart/form-data" data-upload-form>
+        {% if upload_error %}
+        <div class="alert error" role="alert"><strong>Upload rejected</strong><p>{{ upload_error }}</p></div>
+        {% endif %}
+        <div class="field source-field">
+          <label for="source">Source system</label>
+          <select id="source" name="source_id" required>
+            <option value="">Choose a source…</option>
+            {% for s in sources %}<option value="{{ s.id }}" {% if selected_source == (s.id | string) %}selected{% endif %}>{{ s.name }} — {{ s.description }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="dropzone" data-dropzone>
+          <label for="file"><strong>Choose a file</strong> or drop it here</label>
+          <input id="file" type="file" name="file" accept=".csv,.parquet,text/csv" required>
+          <span class="hint">CSV (UTF-8) or Parquet · up to {{ max_upload_mib }} MiB and {{ max_rows | number }} rows</span>
+        </div>
+        <div class="upload-actions">
+          <button type="submit" class="primary" data-submit><span class="spinner" aria-hidden="true"></span><span data-label>Upload and validate</span></button>
+        </div>
+      </form>
+      <details class="contract">
+        <summary>Expected file format</summary>
+        <div class="contract-body small">
+          <p>One header row with exactly these columns (any order). CSV: UTF-8, comma-separated. Parquet: same column names.</p>
+          <table>
+            <thead><tr><th>Column</th><th>Rule</th><th>Example</th></tr></thead>
+            <tbody>
+              <tr><td class="mono">sale_id</td><td>1–64 letters, digits, <span class="mono">. _ -</span>; unique per source; case-sensitive</td><td class="mono">POS-000123</td></tr>
+              <tr><td class="mono">sold_at</td><td>ISO 8601 with UTC offset, whole seconds (Parquet: time-zone-aware timestamp)</td><td class="mono">2026-09-01T14:05:00+02:00</td></tr>
+              <tr><td class="mono">store_id</td><td>1–32 letters, digits, <span class="mono">_ -</span>; stored upper-case</td><td class="mono">BER-01</td></tr>
+              <tr><td class="mono">product_category</td><td>1–64 characters; spaces collapsed, stored lower-case</td><td class="mono">cold drinks</td></tr>
+              <tr><td class="mono">quantity</td><td>whole number 1–10,000 (positive sales only, no refunds)</td><td class="mono">2</td></tr>
+              <tr><td class="mono">unit_price</td><td>decimal with <span class="mono">.</span>, at most 2 decimals, 0.01–1,000,000.00 (Parquet: decimal, never float)</td><td class="mono">19.99</td></tr>
+              <tr><td class="mono">currency</td><td>ISO 4217 code with 2 minor units: AUD, CAD, CHF, CZK, DKK, EUR, GBP, NOK, PLN, SEK, USD</td><td class="mono">EUR</td></tr>
+            </tbody>
+          </table>
+          <p class="muted">Re-sending a sale with identical data is skipped. Re-sending a known <span class="mono">sale_id</span> with different data is a conflict and rejects the whole file.</p>
+        </div>
+      </details>
+    </div>
+  </section>
+
+  <section class="card" aria-labelledby="history-heading">
+    <div class="card-head">
+      <h2 id="history-heading">History</h2>
+      <p>{{ total | number }} import{{ '' if total == 1 else 's' }}</p>
+    </div>
+    {% if jobs %}
+    <div class="table-wrap">
+      <table data-live-jobs="{{ jobs | selectattr('status', 'in', ['queued', 'processing']) | map(attribute='id') | join(',') }}">
+        <thead><tr><th>#</th><th>File</th><th>Source</th><th>Status</th><th>Result</th><th class="num">Rows</th><th>Uploaded</th></tr></thead>
+        <tbody>
+          {% for j in jobs %}
+          <tr>
+            <td class="num"><a href="/imports/{{ j.id }}">{{ j.id }}</a></td>
+            <td class="truncate"><a href="/imports/{{ j.id }}" title="{{ j.original_filename }}">{{ j.original_filename }}</a><span class="sub">{{ j.file_format | upper }} · {{ j.size_bytes | filesize }}</span></td>
+            <td>{{ j.source_name }}</td>
+            <td>{{ status_badge(j) }}</td>
+            <td>{{ job_outcome(j) }}</td>
+            <td class="num">{{ j.rows_read | number }}</td>
+            <td class="nowrap muted">{{ j.created_at | localtime }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if pages > 1 %}<div class="card-foot pager"><span>Page {{ page }} of {{ pages }}</span>{{ pager(page, pages, '/imports') }}</div>{% endif %}
+    {% else %}
+    <div class="empty">
+      <h3>No imports yet</h3>
+      <p>Upload your first export on the left. Demo files: <span class="mono">uv run python -m importguard.sampledata</span></p>
+    </div>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

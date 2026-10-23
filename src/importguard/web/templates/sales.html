@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% from "macros.html" import filter_form, filter_alerts, pager %}
+{% block title %}Sales{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Sales</h1>
+    <p>Published sales only. Times shown in {{ report_timezone }}.</p>
+  </div>
+  <a class="button" href="/sales/export.csv{{ '?' + query if query else '' }}" download>Export {{ total | number }} row{{ '' if total == 1 else 's' }} (CSV)</a>
+</div>
+
+<div class="stack">
+  <section class="card" aria-label="Filters">
+    <div class="card-body">{{ filter_form('/sales', filters, sources, stores, currencies) }}</div>
+  </section>
+  {{ filter_alerts(filter_errors) }}
+
+  <section class="card" aria-label="Sales">
+    {% if rows %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Sold at</th><th>Sale ID</th><th>Source</th><th>Store</th><th>Category</th><th class="num">Qty</th><th class="num">Unit price</th><th class="num">Amount</th><th>Cur.</th><th class="num">Import</th></tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+          <tr>
+            <td class="nowrap">{{ r.sold_at | localtime }}</td>
+            <td class="mono">{{ r.sale_id }}</td>
+            <td>{{ r.source_name }}</td>
+            <td class="mono">{{ r.store_id }}</td>
+            <td>{{ r.product_category }}</td>
+            <td class="num">{{ r.quantity }}</td>
+            <td class="num">{{ r.unit_price | money }}</td>
+            <td class="num"><strong>{{ r.amount | money }}</strong></td>
+            <td>{{ r.currency }}</td>
+            <td class="num"><a href="/imports/{{ r.import_job_id }}">#{{ r.import_job_id }}</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="card-foot pager">
+      <span>{{ ((page - 1) * page_size + 1) | number }}–{{ [page * page_size, total] | min | number }} of {{ total | number }}</span>
+      {{ pager(page, pages, '/sales', query) }}
+    </div>
+    {% elif filters.query_items() %}
+    <div class="empty"><h3>No sales match these filters</h3><p>Try a wider date range or another store.</p><a class="button" href="/sales">Reset filters</a></div>
+    {% else %}
+    <div class="empty"><h3>No sales yet</h3><p>Sales appear here once an import has succeeded.</p><a class="button primary" href="/imports">Upload a file</a></div>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

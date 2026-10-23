@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% from "macros.html" import status_badge, job_outcome, filter_form, filter_alerts %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Sales overview</h1>
+    <p>Only sales from fully successful imports are counted. Currencies are never added together.</p>
+  </div>
+</div>
+
+<div class="stack">
+  <section class="card" aria-label="Filters">
+    <div class="card-body">{{ filter_form('/', filters, sources, stores) }}</div>
+  </section>
+  {{ filter_alerts(filter_errors) }}
+
+  {% if not has_any_sales %}
+  <section class="card">
+    <div class="empty">
+      <div class="icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 13V3m0 0L6 7m4-4 4 4M3 13v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <h3>No sales yet</h3>
+      <p>Upload a CSV or Parquet export to see revenue, sales count and average sale per currency.</p>
+      <a class="button primary" href="/imports">Upload a file</a>
+    </div>
+  </section>
+  {% elif not kpis %}
+  <section class="card">
+    <div class="empty">
+      <h3>No sales match these filters</h3>
+      <p>Try a wider date range or another store.</p>
+      <a class="button" href="/">Reset filters</a>
+    </div>
+  </section>
+  {% else %}
+  <section class="kpi-group" aria-label="Totals per currency">
+    {% for k in kpis %}
+    <div class="kpi-row">
+      <div class="kpi-currency" title="Currency">{{ k.currency }}</div>
+      <div class="card kpi"><div class="kpi-label">Revenue</div><div class="kpi-value">{{ k.revenue | money }}<span class="unit">{{ k.currency }}</span></div></div>
+      <div class="card kpi"><div class="kpi-label">Sales</div><div class="kpi-value">{{ k.sales_count | number }}</div></div>
+      <div class="card kpi"><div class="kpi-label">Average sale</div><div class="kpi-value">{{ k.average_sale | money }}<span class="unit">{{ k.currency }}</span></div></div>
+    </div>
+    {% endfor %}
+  </section>
+
+  <section class="card" aria-labelledby="daily-heading">
+    <div class="card-head">
+      <h2 id="daily-heading">Revenue by day</h2>
+      <p>Days in {{ report_timezone }}</p>
+    </div>
+    {% for s in series %}
+    {% set n = s.points | length %}
+    <div class="chart-block">
+      <div class="chart-title">
+        <h3>{{ s.currency }}</h3>
+        <span class="small muted">peak {{ s.max_revenue | money }} {{ s.currency }}/day{% if s.truncated %} · last {{ n }} days shown{% endif %}</span>
+      </div>
+      <div class="chart">
+        <svg viewBox="0 0 {{ n * 10 }} 170" preserveAspectRatio="none" role="img" aria-label="Daily revenue in {{ s.currency }}">
+          <line class="gridline" x1="0" y1="169.5" x2="{{ n * 10 }}" y2="169.5" vector-effect="non-scaling-stroke"/>
+          <line class="gridline" x1="0" y1="85" x2="{{ n * 10 }}" y2="85" vector-effect="non-scaling-stroke" stroke-dasharray="3 4"/>
+          {% for p in s.points %}
+            {% set h = ((p.revenue / s.max_revenue) * 160) | float if s.max_revenue else 0 %}
+            {% set h = 1.5 if (p.revenue > 0 and h < 1.5) else h %}
+            <rect class="bar" x="{{ loop.index0 * 10 + 1.5 }}" y="{{ 169 - h }}" width="7" height="{{ h }}"><title>{{ p.day }}: {{ p.revenue | money }} {{ s.currency }} · {{ p.sales_count | number }} sales</title></rect>
+          {% endfor %}
+        </svg>
+        <div class="chart-axis"><span>{{ s.points[0].day }}</span><span>{{ s.points[-1].day }}</span></div>
+      </div>
+      <details class="data-table">
+        <summary>Show as table</summary>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Day</th><th class="num">Sales</th><th class="num">Revenue ({{ s.currency }})</th></tr></thead>
+            <tbody>
+              {% for p in s.points | reverse %}<tr><td class="nowrap">{{ p.day }}</td><td class="num">{{ p.sales_count | number }}</td><td class="num">{{ p.revenue | money }}</td></tr>{% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  <section class="card" aria-labelledby="recent-heading">
+    <div class="card-head">
+      <h2 id="recent-heading">Recent imports</h2>
+      <a href="/imports" class="small">All imports →</a>
+    </div>
+    {% if recent_jobs %}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>#</th><th>File</th><th>Source</th><th>Status</th><th>Result</th><th>Uploaded</th></tr></thead>
+        <tbody>
+          {% for j in recent_jobs %}
+          <tr>
+            <td class="num"><a href="/imports/{{ j.id }}">{{ j.id }}</a></td>
+            <td class="truncate"><a href="/imports/{{ j.id }}" title="{{ j.original_filename }}">{{ j.original_filename }}</a></td>
+            <td>{{ j.source_name }}</td>
+            <td>{{ status_badge(j) }}</td>
+            <td>{{ job_outcome(j) }}</td>
+            <td class="nowrap muted">{{ j.created_at | localtime }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty"><p>No imports yet.</p></div>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}
