@@ -122,7 +122,7 @@ Real output from the author's machine (blank lines removed):
 3. Import the next export, which overlaps the previous one
    import #3: Imported: Imported 700 new sales; skipped 300 exact duplicates.
 4. Upload a file that changes the amount of an existing sale
-   import #4: Conflicts with existing sales: Rejected: 1 conflicting sale ID. The whole file was rejected; no sales were changed.
+   import #4: Conflicts with existing sales: Rejected: 1 conflicting row. The whole file was rejected; no sales were changed.
    sales before: 1,700, after: 1,700 -> unchanged
 5. Kill the worker (SIGKILL) while it processes the 100,000-row file
    killed the worker; job status at that moment: processing
@@ -186,8 +186,9 @@ duplicate or extra columns reject the file. The source system is chosen at uploa
   `IMPORTGUARD_REPORT_TIMEZONE` (default `UTC`). Timestamps without an offset are rejected because they are ambiguous.
 - **Money** is `Decimal` in Python and `numeric` in PostgreSQL end to end; `amount = quantity × unit_price` is a
   generated `numeric(14,2)` column. **Different currencies are never summed**: every total is per currency.
-- **CSV**: UTF-8 (BOM allowed), comma-separated, `"` quoting, LF or CRLF line endings, one header row. Row numbers in
-  error reports count data rows (the header is not a row).
+- **CSV**: UTF-8 (BOM allowed, NUL bytes rejected), comma-separated, `"` quoting, LF or CRLF line endings, one header
+  row. Blank lines at the end of the file are ignored; a blank line between data rows is an invalid row. Row numbers
+  in error reports count data rows (the header is not a row).
 - **Limits** (configurable): 50 MiB per upload, 200,000 data rows per file, 4,096 characters per text value.
 
 Normalization is tested field by field in [tests/unit/test_contract.py](tests/unit/test_contract.py), including
@@ -246,14 +247,15 @@ the sales table, not a general exactly-once guarantee. Limits of the approach:
 - advisory locks are tied to a database session: a connection pooler in transaction mode (e.g. PgBouncer) would break
   them; the worker must connect directly;
 - a worker on a *different host* that vanishes without closing its TCP connection keeps its lock until TCP keepalive
-  (configured to ~1 minute) notices; locally a killed process releases it immediately;
+  notices; the worker sets the keepalive parameters for its own server session (`tcp_keepalives_*`, about one minute),
+  while locally a killed process releases it immediately;
 - publication holds a row lock per source, so imports for one source are serialized (fine for daily files);
 - a job is one transaction: a 200,000-row file is one transaction of that size;
 - uploaded files are kept on local disk; losing the upload folder makes queued jobs fail with an internal error.
 
 ## Tests
 
-161 tests: 110 unit tests and 51 integration and end-to-end tests that run against **real PostgreSQL** (no SQLite)
+182 tests: 122 unit tests and 60 integration and end-to-end tests that run against **real PostgreSQL** (no SQLite)
 and real worker processes. The integration suite drops and recreates the database named in
 `IMPORTGUARD_TEST_DATABASE_URL`.
 
@@ -312,19 +314,26 @@ ImportGuard is a **local demonstration tool for one operator, not a public SaaS*
 Built in:
 
 - upload size limit enforced while the request streams in (not after buffering), plus a row limit and a per-value
-  length limit; Parquet decompression guards (uncompressed size and compression ratio from the footer) and a memory
-  limit on the worker container;
+  length limit;
+- Parquet decompression guards: uncompressed size and compression ratio from the file footer, plus a cap on the
+  decoded size of each 10,000-row batch. The footer is written by whoever made the file, so these checks are
+  advisory; the hard limit is the worker's memory limit, which only the Compose setup applies (1 GiB). When running
+  the worker directly on a host, put it under an OS memory limit for untrusted files;
 - the client's file name and extension are never trusted: files are stored under random server-generated names,
   the format is detected from content, the original name is only displayed (escaped);
 - parameterized SQL everywhere (SQLAlchemy Core / bound parameters);
 - CSV exports and error reports are protected against formula injection (`=`, `+`, `-`, `@`, tab, CR prefixed with
   `'`);
-- cross-site form posts are rejected (Origin / Fetch Metadata check), only `localhost` / `127.0.0.1` host headers are
-  accepted (DNS rebinding), strict Content-Security-Policy, `nosniff`, `frame-ancestors 'none'`;
+- cross-site form posts from browsers are rejected (Origin / Fetch Metadata check). Requests with neither header,
+  i.e. non-browser clients such as `curl` or a local script, are accepted: there is no authentication;
+- only `localhost` / `127.0.0.1` host headers are accepted (DNS rebinding); strict Content-Security-Policy,
+  `nosniff`, `frame-ancestors 'none'`;
+- containers run as a non-root user with a read-only root filesystem, no Linux capabilities and
+  `no-new-privileges`; CI actions are pinned to commit SHAs;
 - no secrets in the repository; `.env.example` holds local-only defaults.
 
 **Required before exposing it to a network:** authentication and authorization (there are no users at all), HTTPS,
-real CSRF tokens, rate limiting on uploads, secrets from a secret manager instead of default passwords, malware
+real CSRF tokens, rate limiting and disk quotas for uploads, secrets from a secret manager instead of default passwords, malware
 scanning or isolation of uploads, retention and deletion of uploaded files, database backups, audit logging and
 monitoring of the worker.
 

@@ -32,7 +32,8 @@ duration to tune, no heartbeat thread, no clock skew. `attempts` is incremented 
 `SELECT … FOR UPDATE` before writing (fencing), so even a worker that lost its claim cannot publish.
 
 **Cost.** Incompatible with transaction-mode connection poolers. A worker on another host that disappears without
-closing TCP holds its lock until keepalive detects it (~1 minute with the configured settings). Advisory lock keys
+closing TCP holds its lock until keepalive detects it (the worker sets `tcp_keepalives_*` for its server
+session, about one minute). Advisory lock keys
 share one namespace per database (only ImportGuard uses them here).
 
 ## 4. Validate into a TEMP table, publish in the same transaction
