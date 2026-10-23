@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    name: Lint, format and types
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.2
+        with:
+          version: "0.12.23"
+      - run: uv sync --frozen
+      - run: uv run ruff check src tests scripts migrations
+      - run: uv run ruff format --check src tests scripts migrations
+      - run: uv run mypy
+
+  tests:
+    name: Tests and migrations (PostgreSQL 16)
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16.14-alpine
+        env:
+          POSTGRES_USER: importguard
+          POSTGRES_PASSWORD: importguard
+          POSTGRES_DB: importguard
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U importguard" --health-interval 2s --health-timeout 3s --health-retries 30
+    env:
+      IMPORTGUARD_DATABASE_URL: postgresql+psycopg://importguard:importguard@localhost:5432/importguard
+      IMPORTGUARD_TEST_DATABASE_URL: postgresql+psycopg://importguard:importguard@localhost:5432/importguard_test
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.2
+        with:
+          version: "0.12.23"
+      - run: uv sync --frozen
+      - name: Migrations on an empty database (up, model check, down, up)
+        run: |
+          uv run alembic upgrade head
+          uv run alembic check
+          uv run alembic downgrade base
+          uv run alembic upgrade head
+      - name: Test suite with coverage
+        run: |
+          uv run pytest --cov --cov-report=term --cov-report=xml
+          uv run coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coverage-xml
+          path: coverage.xml
+
+  docker:
+    name: Docker Compose smoke test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.2
+        with:
+          version: "0.12.23"
+      - name: Start the stack
+        run: docker compose up --build --detach --wait --wait-timeout 180 db web
+      - name: Generate demo data on the runner
+        run: uv run --frozen python -m importguard.sampledata --out demo-data
+      - name: Start the worker and run the demo scenario through HTTP
+        run: |
+          docker compose up --detach worker
+          ./scripts/compose_smoke.sh
+      - name: Logs
+        if: always()
+        run: docker compose logs --no-color
+      - name: Stop
+        if: always()
+        run: docker compose down --volumes
