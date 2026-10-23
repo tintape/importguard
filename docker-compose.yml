@@ -1,0 +1,65 @@
+# Local demo stack. Everything is published on 127.0.0.1 only; see README "Security" before exposing it.
+name: importguard
+
+x-app: &app
+  build: .
+  image: importguard:local
+  environment:
+    IMPORTGUARD_DATABASE_URL: postgresql+psycopg://importguard:${POSTGRES_PASSWORD:-importguard}@db:5432/importguard
+    IMPORTGUARD_UPLOAD_DIR: /data/uploads
+    IMPORTGUARD_MAX_UPLOAD_BYTES: ${IMPORTGUARD_MAX_UPLOAD_BYTES:-52428800}
+    IMPORTGUARD_MAX_ROWS: ${IMPORTGUARD_MAX_ROWS:-200000}
+    IMPORTGUARD_REPORT_TIMEZONE: ${IMPORTGUARD_REPORT_TIMEZONE:-UTC}
+  volumes:
+    - uploads:/data/uploads
+
+services:
+  db:
+    image: postgres:16.14-alpine
+    environment:
+      POSTGRES_USER: importguard
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-importguard}
+      POSTGRES_DB: importguard
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U importguard -d importguard"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    # Not published to the host. Uncomment for local psql access (localhost only):
+    # ports: ["127.0.0.1:5432:5432"]
+
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    <<: *app
+    ports:
+      - "127.0.0.1:8000:8000"
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    <<: *app
+    command: ["python", "-m", "importguard.worker"]
+    restart: unless-stopped
+    healthcheck:
+      disable: true
+    stop_grace_period: 60s
+    # A hard memory ceiling: the last line of defence against hostile files.
+    mem_limit: 1g
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:
+  uploads:
