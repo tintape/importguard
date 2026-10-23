@@ -1,0 +1,184 @@
+"""Streaming readers for the two supported file formats.
+
+Neither reader loads the whole file: CSV is read record by record with the
+standard library, Parquet batch by batch with ``ParquetFile.iter_batches``.
+Each yields :class:`RawRow` items holding raw (not yet validated) cell values.
+Problems that make the whole file unreadable raise :class:`FileRejected`.
+"""
+
+from __future__ import annotations
+
+import csv
+from collections.abc import Iterator
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Literal
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+from importguard.contract import FIELDS
+
+FileFormat = Literal["csv", "parquet"]
+
+PARQUET_MAGIC = b"PAR1"
+CSV_FIELD_SIZE_LIMIT = 4096
+_UNITS_PER_SECOND = {"s": 1, "ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}
+
+
+class FileRejected(Exception):
+    """The file as a whole cannot be processed (bad header, schema, encoding...)."""
+
+    def __init__(self, code: str, message: str, row_number: int | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.row_number = row_number
+
+
+@dataclass(frozen=True, slots=True)
+class RawRow:
+    number: int  # 1-based data row number (CSV header not counted)
+    values: dict[str, object] | None
+    error_code: str | None = None
+    error_message: str | None = None
+
+
+def sniff_format(head: bytes, tail: bytes) -> FileFormat | None:
+    """Detect the format from file content; names and extensions are not trusted."""
+    if head.startswith(PARQUET_MAGIC) and tail.endswith(PARQUET_MAGIC):
+        return "parquet"
+    if b"\x00" in head:
+        return None
+    sample = head.removeprefix(b"\xef\xbb\xbf")
+    try:
+        sample.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        # A multi-byte character may be cut at the end of the sample.
+        if exc.start < len(sample) - 3:
+            return None
+    return "csv"
+
+
+def check_header(names: list[str]) -> list[str]:
+    normalized = [name.strip().lower() for name in names]
+    duplicates = sorted({n for n in normalized if normalized.count(n) > 1})
+    if duplicates:
+        raise FileRejected("header_duplicate_columns", f"duplicate columns: {', '.join(duplicates)}")
+    missing = [f for f in FIELDS if f not in normalized]
+    if missing:
+        raise FileRejected("header_missing_columns", f"missing columns: {', '.join(missing)}")
+    unknown = [n for n in normalized if n not in FIELDS]
+    if unknown:
+        shown = ", ".join(repr(n) for n in unknown[:5])
+        raise FileRejected("header_unknown_columns", f"unexpected columns: {shown}")
+    return normalized
+
+
+def iter_csv(path: Path) -> Iterator[RawRow]:
+    csv.field_size_limit(CSV_FIELD_SIZE_LIMIT)
+    row_number = 0
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.reader(handle, strict=True)
+            header = next(reader, None)
+            if header is None:
+                raise FileRejected("empty_file", "the file is empty")
+            columns = check_header(header)
+            for record in reader:
+                row_number += 1
+                if not record or all(not cell.strip() for cell in record):
+                    yield RawRow(row_number, None, "empty_row", "the row is empty")
+                elif len(record) != len(columns):
+                    yield RawRow(
+                        row_number,
+                        None,
+                        "column_count",
+                        f"expected {len(columns)} values, found {len(record)}",
+                    )
+                else:
+                    yield RawRow(row_number, dict(zip(columns, record, strict=True)))
+    except UnicodeDecodeError as exc:
+        raise FileRejected("file_encoding", "the file is not valid UTF-8 text", row_number + 1) from exc
+    except csv.Error as exc:
+        raise FileRejected("csv_syntax", f"malformed CSV: {exc}", row_number + 1) from exc
+    if row_number == 0:
+        raise FileRejected("empty_file", "the file has a header but no data rows")
+
+
+def _check_parquet_type(name: str, kind: pa.DataType) -> None:
+    if pa.types.is_dictionary(kind):
+        kind = kind.value_type
+    is_text = pa.types.is_string(kind) or pa.types.is_large_string(kind) or pa.types.is_string_view(kind)
+    allowed = {
+        "sold_at": is_text or (pa.types.is_timestamp(kind) and kind.tz is not None),
+        "quantity": is_text or pa.types.is_integer(kind),
+        "unit_price": is_text or pa.types.is_decimal(kind),
+    }.get(name, is_text)
+    if not allowed:
+        hint = {
+            "sold_at": "a time-zone-aware timestamp or ISO 8601 text",
+            "quantity": "an integer or text",
+            "unit_price": "a decimal or text (floating point is not accepted for money)",
+        }.get(name, "text")
+        raise FileRejected("schema_type", f"column {name!r} has type {kind}; expected {hint}")
+
+
+def _timestamp_values(column: pa.Array) -> list[object]:
+    """Convert to UTC datetimes without pandas; sub-second parts survive as microseconds."""
+    per_second = _UNITS_PER_SECOND[column.type.unit]
+    values: list[object] = []
+    for raw in column.cast(pa.int64()).to_pylist():
+        if raw is None:
+            values.append(None)
+            continue
+        seconds, fraction = divmod(raw, per_second)
+        micros = fraction * 1_000_000 // per_second or (1 if fraction else 0)
+        try:
+            values.append(datetime.fromtimestamp(seconds, UTC) + timedelta(microseconds=micros))
+        except (OverflowError, OSError, ValueError):
+            values.append(f"<out-of-range timestamp {raw}>")
+    return values
+
+
+def _column_values(column: pa.Array) -> list[object]:
+    if pa.types.is_timestamp(column.type):
+        return _timestamp_values(column)
+    return list(column.to_pylist())
+
+
+def iter_parquet(path: Path, *, batch_rows: int) -> Iterator[RawRow]:
+    try:
+        parquet = pq.ParquetFile(path)
+        schema = parquet.schema_arrow
+    except (pa.ArrowException, OSError) as exc:
+        raise FileRejected("file_corrupt", f"not a readable Parquet file: {exc}") from exc
+    columns = check_header(list(schema.names))
+    original = dict(zip(columns, schema.names, strict=True))
+    for name in FIELDS:
+        _check_parquet_type(name, schema.field(original[name]).type)
+    if parquet.metadata.num_rows == 0:
+        raise FileRejected("empty_file", "the file has no data rows")
+    row_number = 0
+    try:
+        for batch in parquet.iter_batches(batch_size=batch_rows, columns=list(original.values())):
+            data = {name: _column_values(batch.column(original[name])) for name in FIELDS}
+            for index in range(batch.num_rows):
+                row_number += 1
+                yield RawRow(row_number, {name: data[name][index] for name in FIELDS})
+    except pa.ArrowException as exc:
+        raise FileRejected("file_corrupt", f"cannot read Parquet data: {exc}", row_number + 1) from exc
+
+
+def parquet_row_count(path: Path) -> int:
+    try:
+        return int(pq.ParquetFile(path).metadata.num_rows)
+    except (pa.ArrowException, OSError) as exc:
+        raise FileRejected("file_corrupt", f"not a readable Parquet file: {exc}") from exc
+
+
+def iter_rows(path: Path, file_format: FileFormat, *, batch_rows: int) -> Iterator[RawRow]:
+    if file_format == "parquet":
+        return iter_parquet(path, batch_rows=batch_rows)
+    return iter_csv(path)

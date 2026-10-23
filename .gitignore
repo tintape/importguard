@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+dist/
+build/
+
+# Local configuration and data
+.env
+var/
+demo-data/
+benchmark-results/
+
+# Tools and OS
+.claude/
+.idea/
+.vscode/
+.DS_Store
