@@ -104,7 +104,7 @@ coerce types silently (e.g. prices to float).
 
 ## 10. Server-rendered UI with a little JavaScript
 
-**Decision.** Jinja2 templates, one stylesheet, ~60 lines of vanilla JavaScript for progressive enhancement. No SPA,
+**Decision.** Jinja2 templates, one stylesheet, about 50 lines of vanilla JavaScript for progressive enhancement. No SPA,
 no CDN assets.
 
 **Why.** Three screens of tables and forms do not need a client framework. Everything works without JavaScript, the
