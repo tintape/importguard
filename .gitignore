@@ -22,3 +22,4 @@ benchmark-results/
 .idea/
 .vscode/
 .DS_Store
+.coverage.*
