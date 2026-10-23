@@ -29,6 +29,7 @@ MAX_TEXT_CELL_CHARS = CSV_FIELD_SIZE_LIMIT
 # Decompression-bomb guards: a small compressed file must not expand into gigabytes.
 MAX_ROW_GROUP_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
 MAX_TOTAL_UNCOMPRESSED_BYTES = 1024 * 1024 * 1024
+MAX_COMPRESSION_RATIO = 200
 _UNITS_PER_SECOND = {"s": 1, "ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}
 
 
@@ -157,18 +158,31 @@ def _timestamp_values(column: pa.Array) -> list[object]:
     return values
 
 
+def _check_text_lengths(column: pa.Array, first_row: int) -> None:
+    """Reject overlong text before converting to Python objects (dictionaries are never expanded)."""
+    is_dictionary = pa.types.is_dictionary(column.type)
+    kind = column.type.value_type if is_dictionary else column.type
+    if not (pa.types.is_string(kind) or pa.types.is_large_string(kind) or pa.types.is_string_view(kind)):
+        return
+    values = column.dictionary if is_dictionary else column
+    if not len(values):
+        return
+    lengths = pc.utf8_length(values)
+    longest = pc.max(lengths).as_py()
+    if longest is None or longest <= MAX_TEXT_CELL_CHARS:
+        return
+    position = pc.index(lengths, longest).as_py()
+    if is_dictionary:  # find the first row that references the overlong dictionary entry
+        position = pc.index(column.indices, pa.scalar(position, column.indices.type)).as_py()
+    raise FileRejected(
+        "value_too_long", f"a text value is longer than {MAX_TEXT_CELL_CHARS} characters", first_row + max(position, 0)
+    )
+
+
 def _column_values(column: pa.Array, first_row: int) -> list[object]:
     if pa.types.is_timestamp(column.type):
         return _timestamp_values(column)
-    kind = column.type.value_type if pa.types.is_dictionary(column.type) else column.type
-    if (pa.types.is_string(kind) or pa.types.is_large_string(kind) or pa.types.is_string_view(kind)) and len(column):
-        lengths = pc.utf8_length(column.dictionary_decode() if pa.types.is_dictionary(column.type) else column)
-        longest = pc.max(lengths).as_py()
-        if longest is not None and longest > MAX_TEXT_CELL_CHARS:
-            offset = pc.index(lengths, longest).as_py()
-            raise FileRejected(
-                "value_too_long", f"a text value is longer than {MAX_TEXT_CELL_CHARS} characters", first_row + offset
-            )
+    _check_text_lengths(column, first_row)
     return list(column.to_pylist())
 
 
@@ -197,12 +211,17 @@ def iter_parquet(path: Path, *, batch_rows: int) -> Iterator[RawRow]:
 
 
 def _check_uncompressed_size(metadata: pq.FileMetaData) -> None:
+    """Footer-based limits. The footer could lie; the worker's memory limit is the last line of defence."""
     total = 0
     for index in range(metadata.num_row_groups):
-        size = metadata.row_group(index).total_byte_size
-        if size > MAX_ROW_GROUP_UNCOMPRESSED_BYTES:
+        group = metadata.row_group(index)
+        if group.total_byte_size > MAX_ROW_GROUP_UNCOMPRESSED_BYTES:
             raise FileRejected("file_too_large_uncompressed", "a Parquet row group is too large when uncompressed")
-        total += size
+        for column_index in range(group.num_columns):
+            chunk = group.column(column_index)
+            if chunk.total_uncompressed_size > MAX_COMPRESSION_RATIO * max(chunk.total_compressed_size, 1):
+                raise FileRejected("file_too_large_uncompressed", "a Parquet column is suspiciously highly compressed")
+        total += group.total_byte_size
     if total > MAX_TOTAL_UNCOMPRESSED_BYTES:
         raise FileRejected("file_too_large_uncompressed", "the Parquet file is too large when uncompressed")
 

@@ -143,6 +143,19 @@ class TestParquet:
             list(iter_parquet(parquet(tmp_path, cols), batch_rows=10))
         assert (info.value.code, info.value.row_number) == ("value_too_long", 3)
 
+    def test_overlong_dictionary_value_is_found_without_decoding(self, tmp_path: Path) -> None:
+        values = pa.array(["a", "b", "a", "x" * 5000, "b"]).dictionary_encode()
+        with pytest.raises(FileRejected) as info:
+            list(iter_parquet(parquet(tmp_path, good_columns(5) | {"product_category": values}), batch_rows=10))
+        assert (info.value.code, info.value.row_number) == ("value_too_long", 4)
+
+    def test_extreme_compression_ratio_is_rejected(self, tmp_path: Path) -> None:
+        cols = good_columns(200_000) | {"store_id": pa.array(["A" * 1000] * 200_000)}
+        path = parquet(tmp_path, cols, compression="zstd", use_dictionary=False)
+        with pytest.raises(FileRejected) as info:
+            list(iter_parquet(path, batch_rows=10))
+        assert info.value.code == "file_too_large_uncompressed"
+
     def test_decompression_bomb_guard(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(readers, "MAX_TOTAL_UNCOMPRESSED_BYTES", 100)
         with pytest.raises(FileRejected) as info:
