@@ -210,9 +210,7 @@ INVALID_ROWS: tuple[tuple[int, str, str, str], ...] = (
 
 def build(out: Path) -> dict[str, Any]:
     rng = random.Random(SEED)  # noqa: S311 - reproducible demo data, not security-related
-    if out.exists():
-        shutil.rmtree(out)
-    out.mkdir(parents=True)
+    out.mkdir(parents=True, exist_ok=True)  # files with the same names are overwritten; nothing else is touched
 
     pos_day1 = _make_sales(rng, source="pos", prefix="POS", start=1, count=1_000, stores=POS_STORES)
     pos_new = _make_sales(rng, source="pos", prefix="POS", start=1_001, count=700, stores=POS_STORES)
