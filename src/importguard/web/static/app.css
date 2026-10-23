@@ -308,3 +308,19 @@ td .stat { white-space: nowrap; }
   .upload-row .dropzone { grid-auto-flow: row; justify-items: start; }
 }
 .upload-row .dropzone label { white-space: nowrap; }
+
+/* ---------- overflow guards and small screens ---------- */
+.stack { grid-template-columns: minmax(0, 1fr); }
+.stack > *, .grid-2 > *, .kpi-row > * { min-width: 0; }
+@media (max-width: 640px) {
+  .topbar-inner { height: auto; min-height: 52px; flex-wrap: wrap; row-gap: 0; }
+  .brand { padding-top: 12px; }
+  .nav { width: 100%; height: 44px; overflow-x: auto; }
+  .nav a { padding: 0 10px; }
+  .kpi-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+  .kpi-row .kpi-currency, .kpi-row .kpi-currency + .kpi { grid-column: 1 / -1; }
+  .kpi-value { font-size: 1.3rem; }
+  .filters .field { flex: 1 1 140px; }
+  .filters input, .filters select { width: 100%; }
+  .page-head .button { width: 100%; }
+}

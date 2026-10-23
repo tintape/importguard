@@ -414,7 +414,7 @@ def _finish_failed(
 
 
 def _plural(count: int, word: str) -> str:
-    return f"{count} {word}{'' if count == 1 else 's'}"
+    return f"{count:,} {word}{'' if count == 1 else 's'}"
 
 
 def _failure_message(kind: str, errors: ErrorCollector) -> str:
