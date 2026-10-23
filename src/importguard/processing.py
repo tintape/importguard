@@ -144,7 +144,7 @@ def _take_locked_job(conn: Connection, job_id: int, *, worker_id: str, max_attem
     attempt = conn.execute(
         text(
             "UPDATE import_jobs SET status = 'processing', attempts = attempts + 1, "
-            "worker_id = :worker, started_at = now(), finished_at = NULL "
+            "worker_id = :worker, started_at = clock_timestamp(), finished_at = NULL "
             "WHERE id = :id RETURNING attempts"
         ),
         {"id": job_id, "worker": worker_id},
@@ -209,7 +209,7 @@ def process_claimed_job(conn: Connection, claim: Claim, settings: Settings, *, n
     message = _success_message(inserted, skipped, claim.attempt)
     conn.execute(
         text(
-            "UPDATE import_jobs SET status = 'succeeded', finished_at = now(), rows_read = :read, "
+            "UPDATE import_jobs SET status = 'succeeded', finished_at = clock_timestamp(), rows_read = :read, "
             "rows_inserted = :inserted, rows_skipped = :skipped, error_count = 0, message = :message "
             "WHERE id = :id"
         ),
@@ -405,7 +405,7 @@ def _finish_failed(
 ) -> None:
     conn.execute(
         text(
-            "UPDATE import_jobs SET status = 'failed', failure_kind = :kind, finished_at = now(), "
+            "UPDATE import_jobs SET status = 'failed', failure_kind = :kind, finished_at = clock_timestamp(), "
             "rows_read = :read, rows_inserted = 0, rows_skipped = 0, error_count = :errors, message = :message "
             "WHERE id = :id"
         ),
