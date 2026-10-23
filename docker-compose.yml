@@ -12,6 +12,13 @@ x-app: &app
     IMPORTGUARD_REPORT_TIMEZONE: ${IMPORTGUARD_REPORT_TIMEZONE:-UTC}
   volumes:
     - uploads:/data/uploads
+  # Hardening: immutable root filesystem, no Linux capabilities, no privilege escalation.
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
 
 services:
   db:
@@ -43,6 +50,7 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     restart: unless-stopped
+    mem_limit: 512m
     depends_on:
       migrate:
         condition: service_completed_successfully
