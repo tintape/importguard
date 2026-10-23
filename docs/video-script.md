@@ -1,5 +1,9 @@
 # 90-second demo video script
 
+A captioned recording that follows this script, at 2× speed, is in [demo.gif](demo.gif). It was recorded from the
+running app on an empty database with Playwright driving Chrome; the worker kill in the last scene is a real
+`SIGKILL`. The table below is the script for a narrated version.
+
 Screen recording of the running app with the demo data (`python -m importguard.sampledata`), starting from an empty
 database. Voice-over in plain English; timings are approximate.
 

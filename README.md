@@ -18,6 +18,10 @@ one operator that makes that merge safe and explainable:
 It is a portfolio project: a deliberately small but complete product. **All data in this repository is synthetic.**
 It does not describe a real customer, a commercial deployment or proven savings.
 
+![ImportGuard demo: valid import, re-upload without duplicates, overlap, conflict, validation errors, reports, and recovery after the worker is killed](docs/demo.gif)
+
+*Recorded from the running app at 2× speed; captions are added as an overlay.*
+
 ![Dashboard](docs/screenshots/dashboard.png)
 
 | A conflicting correction is rejected as a whole | An import that survived a killed worker |
